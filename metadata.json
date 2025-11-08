@@ -1,0 +1,5 @@
+{
+  "name": "Catalog Product Extractor",
+  "description": "An intelligent application that uses Gemini to automatically extract product details, pricing, and other key information from uploaded catalog pages.",
+  "requestFramePermissions": []
+}
