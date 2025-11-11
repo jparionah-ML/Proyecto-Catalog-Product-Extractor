@@ -12,3 +12,10 @@ export interface Product {
 }
 
 export type Brand = 'Belcorp' | 'Natura' | 'Generic';
+
+export interface ProcessSummary {
+  brand: Brand | '';
+  totalPages: number;
+  totalProducts: number;
+  processingTime: number;
+}

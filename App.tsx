@@ -5,7 +5,8 @@ import { FileUpload } from './components/FileUpload';
 import { Loader } from './components/Loader';
 import { ErrorDisplay } from './components/ErrorDisplay';
 import { ResultsDisplay } from './components/ResultsDisplay';
-import { Product, Brand } from './types';
+import { SummaryDisplay } from './components/SummaryDisplay';
+import { Product, Brand, ProcessSummary } from './types';
 import { processPdf } from './services/geminiService';
 
 const App: React.FC = () => {
@@ -15,6 +16,7 @@ const App: React.FC = () => {
   const [progress, setProgress] = useState<{ currentPage: number; totalPages: number } | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<Brand | ''>('');
+  const [summary, setSummary] = useState<ProcessSummary | null>(null);
 
 
   const handleProcess = async () => {
@@ -27,10 +29,30 @@ const App: React.FC = () => {
     setError(null);
     setProducts([]);
     setProgress(null);
+    setSummary(null);
     
+    const startTime = Date.now();
+
     try {
-      const results = await processPdf(selectedFile, selectedBrand, (p) => setProgress(p));
+      let totalPagesInRun = 0;
+      const progressCallback = (p: { currentPage: number; totalPages: number }) => {
+        setProgress(p);
+        totalPagesInRun = p.totalPages;
+      };
+
+      const results = await processPdf(selectedFile, selectedBrand, progressCallback);
       setProducts(results);
+
+      const endTime = Date.now();
+      const durationInSeconds = (endTime - startTime) / 1000;
+      
+      setSummary({
+        brand: selectedBrand,
+        totalPages: totalPagesInRun,
+        totalProducts: results.length,
+        processingTime: parseFloat(durationInSeconds.toFixed(2)),
+      });
+
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message);
@@ -65,9 +87,10 @@ const App: React.FC = () => {
         {isLoading && <div className="max-w-4xl mx-auto mt-6"><Loader progress={progress} /></div>}
         {error && <div className="max-w-4xl mx-auto mt-6"><ErrorDisplay message={error} /></div>}
         
-        {products.length > 0 && !isLoading && (
+        {(summary || products.length > 0) && !isLoading && (
           <div className="max-w-7xl mx-auto mt-8">
-             <ResultsDisplay data={products} />
+            {summary && <SummaryDisplay summary={summary} />}
+            {products.length > 0 && <ResultsDisplay data={products} />}
           </div>
         )}
       </main>

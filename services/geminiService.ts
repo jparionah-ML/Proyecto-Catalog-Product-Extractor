@@ -1,15 +1,55 @@
 // Fix: Implement PDF processing and Gemini API interaction.
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-import * as pdfjsLib from 'pdfjs-dist';
 import { Product, Brand } from "../types";
 import { getJsonSchema, getPrompt } from "./promptService";
 
-// The worker is needed for pdfjs-dist to work in a browser environment.
-// Using a CDN for simplicity.
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// Tell TypeScript that pdfjsLib is available globally, loaded from index.html
+declare const pdfjsLib: any;
 
 // Fix: Initialize GoogleGenAI with API key from environment variables.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+
+/**
+ * A wrapper for the Gemini API call that includes an exponential backoff retry mechanism.
+ * @param model The model to use.
+ * @param contents The contents for the request.
+ * @param config The configuration for the request.
+ * @param maxRetries The maximum number of retries.
+ * @returns The GenerateContentResponse.
+ */
+async function generateContentWithRetry(
+    model: string, 
+    contents: any, 
+    config: any, 
+    maxRetries = 3
+): Promise<GenerateContentResponse> {
+  let attempt = 0;
+  let delay = 2000; // Start with a 2-second delay
+
+  while (attempt < maxRetries) {
+    try {
+      const response = await ai.models.generateContent({ model, contents, config });
+      return response; // Success
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('429'))) {
+        attempt++;
+        if (attempt >= maxRetries) {
+          console.error(`Failed after ${maxRetries} attempts.`);
+          throw error; // Re-throw the error after the final attempt
+        }
+        console.warn(`Rate limit hit. Retrying in ${delay / 1000}s... (Attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 2; // Double the delay for the next retry
+      } else {
+        // For non-rate-limit errors, fail immediately
+        throw error;
+      }
+    }
+  }
+  // This should be unreachable, but it's a fallback to satisfy TypeScript
+  throw new Error("Failed to generate content after multiple retries.");
+}
+
 
 async function pdfToImages(file: File): Promise<string[]> {
   const images: string[] = [];
@@ -40,6 +80,9 @@ async function pdfToImages(file: File): Promise<string[]> {
         }
         resolve(images);
       } catch (error) {
+        if (error instanceof Error) {
+            return reject(new Error(`Failed to process PDF: ${error.message}`));
+        }
         reject(error);
       }
     };
@@ -77,22 +120,19 @@ export const processPdf = async (
 
       const textPart = { text: getPrompt(brand) };
 
-      // Fix: Call Gemini API using the correct method and parameters.
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: { parts: [imagePart, textPart] },
-        config: {
+      // Fix: Call Gemini API using the new retry wrapper.
+      const response: GenerateContentResponse = await generateContentWithRetry(
+        "gemini-2.5-flash",
+        { parts: [imagePart, textPart] },
+        {
             responseMimeType: "application/json",
             responseSchema: getJsonSchema()
         }
-      });
+      );
       
-      // Fix: Use response.text to get the generated content.
       const responseText = response.text.trim();
       
       try {
-        // The API might return an array or a single object for a single product page.
-        // We'll handle both cases.
         const parsedData = JSON.parse(responseText);
         const pageProducts: Omit<Product, 'pageNumber'>[] = Array.isArray(parsedData) ? parsedData : [parsedData];
 
@@ -105,7 +145,11 @@ export const processPdf = async (
         allProducts = [...allProducts, ...productsWithMetadata];
       } catch(e) {
         console.error(`Error parsing JSON from page ${pageNumber}:`, responseText, e);
-        // Continue to next page if one page fails to parse
+      }
+
+      // Keep a small delay as a primary preventative measure. The retry is a fallback.
+      if (i < totalPages - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1100));
       }
     }
     
@@ -113,18 +157,22 @@ export const processPdf = async (
   } catch (error) {
     console.error("Error processing PDF:", error);
     if (error instanceof Error) {
-        const message = error.message;
-        // Try to parse a more specific error from Gemini
-        try {
-          const errorJson = JSON.parse(message.substring(message.indexOf('{'), message.lastIndexOf('}') + 1));
-          if(errorJson.error?.message) {
-            throw new Error(`Gemini API Error: ${errorJson.error.message}`);
-          }
-        } catch(e) {
-          // Fallback to original error message
-          throw new Error(`Failed to process PDF: ${message}`);
+        let friendlyMessage = error.message;
+
+        if (friendlyMessage.includes('RESOURCE_EXHAUSTED') || friendlyMessage.includes('429')) {
+             friendlyMessage = "You have exceeded your request quota for the Gemini API. Please check your plan and billing details, or try again later.";
+        } else {
+            try {
+                const jsonString = friendlyMessage.substring(friendlyMessage.indexOf('{'));
+                const errorJson = JSON.parse(jsonString);
+                if (errorJson.error?.message) {
+                    friendlyMessage = `An API error occurred: ${errorJson.error.message}`;
+                }
+            } catch (e) {
+                // Fallback to original message if parsing fails
+            }
         }
-        throw new Error(`Failed to process PDF: ${message}`);
+        throw new Error(friendlyMessage);
     }
     throw new Error("An unknown error occurred during PDF processing.");
   }
