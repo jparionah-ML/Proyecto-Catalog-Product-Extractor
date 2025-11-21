@@ -1,4 +1,3 @@
-// Fix: Implement the main App component, managing state and orchestrating child components.
 import React, { useState } from 'react';
 import { Header } from './components/Header';
 import { FileUpload } from './components/FileUpload';
@@ -13,11 +12,10 @@ const App: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ currentPage: number; totalPages: number } | null>(null);
+  const [progress, setProgress] = useState<{ completedPages: number; totalPages: number } | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<Brand | ''>('');
   const [summary, setSummary] = useState<ProcessSummary | null>(null);
-
 
   const handleProcess = async () => {
     if (!selectedFile || !selectedBrand) {
@@ -31,69 +29,78 @@ const App: React.FC = () => {
     setProgress(null);
     setSummary(null);
     
-    const startTime = Date.now();
+    const start = Date.now();
 
     try {
-      let totalPagesInRun = 0;
-      const progressCallback = (p: { currentPage: number; totalPages: number }) => {
-        setProgress(p);
-        totalPagesInRun = p.totalPages;
-      };
+      const results = await processPdf(
+        selectedFile, 
+        selectedBrand, 
+        (p) => setProgress(p), 
+        (newItems) => setProducts(prev => [...prev, ...newItems])
+      );
 
-      const results = await processPdf(selectedFile, selectedBrand, progressCallback);
-      setProducts(results);
-
-      const endTime = Date.now();
-      const durationInSeconds = (endTime - startTime) / 1000;
+      const duration = (Date.now() - start) / 1000;
       
       setSummary({
         brand: selectedBrand,
-        totalPages: totalPagesInRun,
+        totalPages: progress?.totalPages || 0,
         totalProducts: results.length,
-        processingTime: parseFloat(durationInSeconds.toFixed(2)),
+        processingTime: parseFloat(duration.toFixed(2)),
       });
 
-    } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('An unknown error occurred during processing.');
-      }
+    } catch (err: any) {
+      setError(err.message || 'An unknown error occurred.');
     } finally {
       setIsLoading(false);
-      setProgress(null);
     }
   };
 
   return (
-    <div className="bg-gray-100 min-h-screen font-sans">
+    <div className="bg-slate-50 min-h-screen font-sans text-slate-900 flex flex-col">
       <Header />
-      <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="max-w-4xl mx-auto bg-white p-6 sm:p-8 rounded-lg shadow-md">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-2">Upload Catalog PDF</h2>
-          <p className="text-gray-600 mb-6">
-            Select a brand and a PDF file of a product catalog. The system will extract product information from each page using the Gemini API.
-          </p>
-          <FileUpload 
-            onFileChange={setSelectedFile}
-            onBrandChange={setSelectedBrand}
-            onProcess={handleProcess}
-            brand={selectedBrand}
-            file={selectedFile}
-            disabled={isLoading} 
-          />
+      
+      <main className="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 py-8 max-w-7xl">
+        <div className="space-y-8">
+          
+          {/* Upload Section */}
+          <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all">
+             <div className="p-6 md:p-8">
+                <div className="mb-6">
+                    <h2 className="text-2xl font-bold text-slate-800">New Extraction</h2>
+                    <p className="text-slate-500 mt-1">Upload your PDF catalog to begin extracting product data.</p>
+                </div>
+                <FileUpload 
+                    onFileChange={setSelectedFile}
+                    onBrandChange={setSelectedBrand}
+                    onProcess={handleProcess}
+                    brand={selectedBrand}
+                    file={selectedFile}
+                    disabled={isLoading} 
+                />
+             </div>
+             
+             {isLoading && (
+                 <div className="bg-slate-50 border-t border-slate-100 p-6 md:p-8">
+                     <Loader progress={progress} />
+                 </div>
+             )}
+          </section>
+
+          {error && <ErrorDisplay message={error} />}
+          
+          {/* Results Section */}
+          {(products.length > 0 || summary) && (
+             <section className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {summary && <SummaryDisplay summary={summary} />}
+                <ResultsDisplay data={products} isLoading={isLoading} />
+             </section>
+          )}
         </div>
-        
-        {isLoading && <div className="max-w-4xl mx-auto mt-6"><Loader progress={progress} /></div>}
-        {error && <div className="max-w-4xl mx-auto mt-6"><ErrorDisplay message={error} /></div>}
-        
-        {(summary || products.length > 0) && !isLoading && (
-          <div className="max-w-7xl mx-auto mt-8">
-            {summary && <SummaryDisplay summary={summary} />}
-            {products.length > 0 && <ResultsDisplay data={products} />}
-          </div>
-        )}
       </main>
+
+      <footer className="py-8 text-center text-slate-400 text-sm">
+        <p>© {new Date().getFullYear()} Catalog Extractor AI. Powered by Gemini 2.5 Flash.</p>
+      </footer>
     </div>
   );
 };
